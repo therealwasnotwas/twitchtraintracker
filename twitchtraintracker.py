@@ -1,143 +1,129 @@
-00# ,;' Twitch Raid Train Session Time Tracker - Ross Leak (wasnotwas) v0.1a ';,
-
-# Import required standard libraries into memory - datetime, collections, default dictionary
+# === Twitch Train Tracker  ===
+# === Version 0.2alpha
+# === Python CLI Version
+# === (©)opyright 2025 - wasnotwas - Ross Leak - wasnotwas@duck.com
 
 import re
-from datetime import datetime, timedelta
-from collections import defaultdict
-
 import os
+import glob
+from datetime import datetime, timedelta
 
-##
-# Text Manipulation (Dont need it but useful for later)
-# ANSI escape codes for red and bold
-#red_bold = "\033[1;31m"
-#reset_text = "\033[0m"
+# === Here are the precompiled regex patterns to optimise speed and memory ===
+def build_patterns(user):
+    base = rf"(irc\.twitch\.(#[\w\d_]+)\.weechatlog):(\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}:\d{{2}})"
+    return {
+        "join": re.compile(base + rf"\s+-->\s+{re.escape(user)}\s+\([^\)]+\)\s+has joined"),
+        "leave": re.compile(base + rf"\s+<--\s+{re.escape(user)}\s+\([^\)]+\)\s+has left")
+    }
 
-# Your message
-#text = "This is a test message with a word in red and bold."
+# === Funcion: Define the Stream Lines from File List to save memory ===
+def stream_lines(file_list):
+    for path in file_list:
+        with open(path, "r", encoding="utf-8") as f:
+            yield from f
 
-# Replace the word you want to format
-#formatted_text = text.replace("word", f"{red_bold}word{reset_text}")
+# === Function: Parse the Sessions in One Pass to save resources ===
+def parse_sessions(lines, user):
+    patterns = build_patterns(user)
+    joins = []
+    leaves = []
 
-#print(formatted_text)
-##
+    for line in lines:
+        if m := patterns["join"].search(line):
+            channel = m.group(2)
+            timestamp = datetime.strptime(m.group(3), "%Y-%m-%d %H:%M:%S")
+            joins.append((timestamp, channel))
+        elif m := patterns["leave"].search(line):
+            channel = m.group(2)
+            timestamp = datetime.strptime(m.group(3), "%Y-%m-%d %H:%M:%S")
+            leaves.append((timestamp, channel))
 
+    joins.sort()
+    leaves.sort()
 
-
-# CORE PROGRAM FUNCTION DEFINITIONS #
-
-# ,;' Define my Regex patterns for "joined" and "left" statements from WeeChat log format ';, 
-def build_twitch_patterns_weechat_format(user):
-    join = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+-->\s+" + re.escape(user))
-    leave = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+<--\s+" + re.escape(user))
-    channel = re.compile(r"irc\.twitch\.(#[\w\d_]+)\.weechatlog")
-    return join, leave, channel
-
-# Function: Parse the log logic for Weechat format
-def function_parse_log_weechat(filename, user):
-    join_pattern, leave_pattern, channel_pattern = build_twitch_patterns_weechat_format(user)
-    sessions = defaultdict(list)
-    pending_joins = defaultdict(list)
-
-    with open(filename, "r", encoding="utf-8") as f:
-        for line in f:
-            channel_match = channel_pattern.search(line)
-            if not channel_match:
-                continue
-            channel = channel_match.group(1)
-
-            join_match = join_pattern.search(line)
-            leave_match = leave_pattern.search(line)
-
-            if join_match:
-                timestamp = datetime.strptime(join_match.group(1), "%Y-%m-%d %H:%M:%S")
-                pending_joins[channel].append(timestamp)
-
-            elif leave_match:
-                timestamp = datetime.strptime(leave_match.group(1), "%Y-%m-%d %H:%M:%S")
-                if pending_joins[channel]:
-                    join_time = pending_joins[channel].pop(0)
-                    sessions[channel].append((join_time, timestamp))
-
+    sessions = []
+    j, l = 0, 0
+    while j < len(joins) and l < len(leaves):
+        join_time, join_chan = joins[j]
+        leave_time, leave_chan = leaves[l]
+        if join_time <= leave_time and join_chan == leave_chan:
+            sessions.append((join_chan, join_time, leave_time))
+            j += 1
+            l += 1
+        elif join_time > leave_time:
+            l += 1
+        else:
+            j += 1
     return sessions
 
-# Function: Need to calculate Total Time "twitchuser" spent in each session from weechat log
-def summarise_twitch_sessions(sessions, user):
-    total_time = timedelta()
-    print(f"\nRaid Train session summary for twitch user: \033[1;31m{user}\033[0m\n")
-    print(f"{'Twitch Channel':<20} {'Joined':<20} {'Left':<17} {'Duration'}")
-    print("-" * 68)
+# === Function: Summarise Sessions ===
+def summarize_sessions(sessions, user):
+    total = timedelta()
+    print(f"\n⏱ Time summary for twitch user: \033[1;36m{user}\033[0m\n")
+    print(f"{'Channel':<20} {'Joined':<20} {'Left':<20} {'Duration'}")
+    print("-" * 80)
+    for channel, join, leave in sessions:
+        duration = leave - join
+        total += duration
+        print(f"{channel:<20} {join} {leave} {str(duration)}")
+    print(f"\nTotal time \033[1;36m{user}\033[0m spent: {str(total)}")
 
-    for channel, pairs in sessions.items():
-        for join, leave in pairs:
-            duration = leave - join
-            total_time += duration
-            print(f"{channel:<20} {join} {leave} {str(duration)}")
+# === Function: File Discovery and Filtering ===
+def discover_files(directory, use_filter=False, start=None, end=None):
+    extensions = ("*.txt", "*.log", "*.weechatlog")
+    files = []
+    for ext in extensions:
+        for path in glob.glob(os.path.join(directory, ext)):
+            if not use_filter or (start <= datetime.fromtimestamp(os.path.getmtime(path)) <= end):
+                files.append(path)
+    return files
 
-    print(f"\nTotal time \033[1;31m{user}\033[0m spent in all streams:", str(total_time))
+# === Confirm File List ===
+def confirm_files(files):
+    print("\n📂 Files to be processed are the following (Please check they are correct):")
+    for f in files:
+        print(f" - {f}")
+    return input("\nProceed with these files? (yes/no): ").strip().lower() == "yes"
 
-# ,;' Section: The Main Interface / Initial Prompt for user ';,
+# === Main Interface ===
 def main():
-    os.system('cls' if os.name == 'nt' else 'clear')
-    print("""\
+    os.system("cls" if os.name == "nt" else "clear")
+    print("🎧 Twitch Train Tracker (version 0.2alpha - (©) wasnotwas 2025)")
+    print("Latest version: https://github.com/therealwasnotwas/twitchtraintracker\n")
 
-          ******       **                            **+****    ***    **                 
-        ****  **#    ***#             ****         *+*** #**%  ***#**#***                 
-       ***   ***#  ****#           #   ##         ***#   **#   *** ##***#           #     
-      #*#   ****% ****# **** **#****# **#******  #*##    **#  **#**#******* *****#**###   
-       ### ****# **#**% **# **#****  **#***# ###        **## **##*# **##**#**#******# ##  
-          ***#*#**#**# **# **##*#**#**#***#  #*%        **# **# *###*###*##***##**#*###   
-    **# ***#% #####*## *##*###*########*######          *##**  ########### ###########    
-    #######    %   ###  %%  #%  ##   #%  %#%            ####    #%  ##%%    %#%  %#       
-
-                                       *#**##########                                     
-                                 *******###%%%%%##%#######                                
-                             +==+*##%%@%@@@@@@@@@@@@@%@%%%#%##                            
-                          *++=*#@%%@%                @@@@@@%%%%%%                         
-                        **+*#%%%%                         %@@@%%%%%                       
-                       **#%%%%       ###***########%#        %@@%%%%@                     
-                     %##%%%%     ++++++++++++**###########     %%%%%%%                    
-                   %%%%%%     +=-=++=-**+-==++*#####*%%%%##*%    %%%%@@@                  
-                  @%%@%     +=--:-+=:+**=--==+######%%%%%%%%###    @%@@@@                 
-                 @%%%%    ++==**++=:+**::-=*#####%%%%%#*##%%%%%##   %%@@@@                
-                @@%%%%  **++=+*+:::+*##+=#######%%%%%**####%%%%%###  %%@@@@               
-                @@%%@  #*++===-::::+#########%%%%%##%**#%%#%%%%%%%##  %%@@@               
-               @@@@%  #**+++====+==*#####%%%%%%%%#*#%##%###%%%%%@@%##  %@@@               
-               @@%%%%%#****+====*#####%%%%%%%%%%%%%***#####%%%%@@@@%%%%%%%@@              
-             ######%@##**+++*####%%%%%%%%%%%%%%%%%%#######%%%@@@@@@@%%%%######            
-           #######%%%##****#%%%%%%%%%%%%%%%%%%%%%####%%%%%%%%@@@@@@@@%%%%#######          
-          ###*++++%%%#%%##%%%%%%%%%%%%%%%%%%%%%%%###%%%%%@@@@@@@@@@@@%%%#*+**####         
-         ###*+==+*#%%@@%%%%%%%%%%%%%%%%%%%%%%%%%%#####%%%@@%@@@@@@@@@%%%#++==+####        
-        *###*++++*#@@@%@%%%%%%%%%%%%%%%%%%%%%@%%%####%%%%%%%@@@@@@@@@%%%%*++++**##*       
-        +##***+***%@@%%@@@@%%%%%%%%%%%%%%%@@@@%####%%%%%%%%@@@@@@@@@@@@@%**+++**##+       
-       *=**+=-=+*#%@@@@@@%%@@%%%%%%%%%@@@@@@@@%##%%%%%%%%%@@@@@@@@@@%@@@%***===+**=       
-       +-=-:..:=+*%@@@@@%###**%%@@@@@@@@@@@@@@#%%%%%%%%%%@@@@@@@@@@%@@@%#*+-:..:-=-#      
-        =++===+*##@@@@@@@%###***#%@@@@@@@@@@@@%%%%%%%%@@@@@@@@@@@@@%@@@@%%#*===+**=       
-        +**##**%%@@@@@@@%%%####**#%@@@@@@@@@@@@@%%%%@@@@@@@@@@@@@%%@@@@@%%%######++       
-        **%%%%%%@@@@@%@@@%%%#########%@@@@@@@@@@@@@@@@@@@@@@@@@%%%@@@@@@%@@@@%%%%*        
-         #%%@%@@@@%@@@%@@@%%%#########%%@@@@@@@@@@@@@@@@@@@@@%%%@@@%%@@@@@@@%@%%##        
-           %%%%@@%%%@@%%%@@%%%%%%%%%%%%@@@@@@@@@@@@@@@@@@@@@%%%%@%%%@@@%%@@@%%%%          
-            ###%%%#%%@@%%%@@%%%%%%%%%%@@@@@@@@@@@@@@@@@@@@%%%##%##%@@%%%%%%%%#%           
-              ######%%@@%#%%%%%%%%%@@@@@@@@@@@@@@@@@@@@@%%%%#%%###@@%%####%#%             
-                  ###%%@ ###%%#%%%%@@@@@@@@@@@@@@@@@@@@%%%##%%###  %%####                 
-                           ######%%@@@@@@@@@@@@@@@@@@@@%##%%####                          
-                             ####%%@@@@@@@@@@@@@@@@@@@@%%%###                             
-                                **#%%%%@@@@@@@@@@@@@%%%####                               
-                                    *###%%%%%%%%%%%####                                   
-                                                                                          
-""")
-
-    print("🎧 Twitch Train Tracker (v0.1a alpha release)")
-    print("🎧 \033[1;35mMusic Vibes Version\033[0m")
-    print("🎧 © wasnotwas - all rights reserved")
-    print("")
-    log_file = input("Please enter the full path and filename of the log file: ").strip()
-    target_user = input("Please enter the twitch username you wish to track against the log file: ").strip()
+    print("note: file extensions read by the program are .txt, .log, or .weechatlog")
+    mode = input("Would you like to analyse a single log file, or a directory full of log files? (file/dir): ").strip().lower()
+    user = input("Please enter the Twitch username you wish to query against the log file(s): ").strip()
 
     try:
-        sessions = function_parse_log_weechat(log_file, target_user)
-        summarise_twitch_sessions(sessions, target_user)
+        if mode == "dir":
+            path = input("Please enter full directory path for the logs (such as /home/oldgit/logs): ").strip()
+            use_filter = input("Would you like to filter the log files by a date range? (yes/no): ").strip().lower() == "yes"
+            if use_filter:
+                start = datetime.strptime(input("Start date (YYYY-MM-DD): ").strip(), "%Y-%m-%d")
+                end = datetime.strptime(input("End date (YYYY-MM-DD): ").strip(), "%Y-%m-%d")
+                files = discover_files(path, True, start, end)
+            else:
+                files = discover_files(path)
+
+            if not files:
+                print("❌ Oops. There are no matching files found.")
+                return
+            if not confirm_files(files):
+                print("❌ Oh no. You have cancelled the operation. Please re-run the app if you made a mistake and wish to start again.")
+                return
+
+        else:
+            path = input("Please enter the log file name and path (such as /home/oldgit/twitchchannel.log): ").strip()
+            if not os.path.exists(path):
+                print("❌ Oops. That file is not found.")
+                return
+            files = [path]
+
+        lines = stream_lines(files)
+        sessions = parse_sessions(lines, user)
+        summarize_sessions(sessions, user)
+
     except Exception as e:
         print(f"\n❌ Error: {e}")
 
